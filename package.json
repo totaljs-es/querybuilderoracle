@@ -13,12 +13,9 @@
     "sql",
     "totaljs"
   ],
-  "author": "Icneo Team",
+  "author": "Total.js (Spain)",
   "license": "MIT",
   "dependencies": {
     "oracledb": "latest"
-  },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/"
   }
 }
