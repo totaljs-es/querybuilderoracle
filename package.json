@@ -1,18 +1,24 @@
 {
-	"name": "querybuilderoracle",
-	"version": "0.1.0",
-	"description": "Totaljs Oracle integrator",
-	"main": "index.js",
-    "scripts": {
-    	"test": "echo 'No tests yet'"
-    },
-	"keywords": ["oracle", "querybuilder", "database", "sql", "totaljs"],
-	"author": "",
-	"license": "MIT",
-	"dependencies": {
-		"oracledb": "latest"
-	},
-  	"publishConfig": {
-    		"registry": "https://registry.npmjs.org/"
-  	}
+  "name": "querybuilderoracle",
+  "version": "0.1.0",
+  "description": "Total.js Oracle integrator",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo 'No tests yet'"
+  },
+  "keywords": [
+    "oracle",
+    "querybuilder",
+    "database",
+    "sql",
+    "totaljs"
+  ],
+  "author": "Icneo Team",
+  "license": "MIT",
+  "dependencies": {
+    "oracledb": "latest"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  }
 }
