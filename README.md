@@ -1,1 +1,1 @@
-# querybuilderoracle
+# Total.js QueryBuilder: Oracle
