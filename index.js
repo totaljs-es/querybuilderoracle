@@ -12,95 +12,113 @@ const POOLS = {};
 var FieldsCache = {};
 
 function exec(client, filter, callback, done, errorhandling) {
-    var cmd;
 
-    if (filter.exec === 'list') {
-        try {
-            cmd = makesql(filter);
-        } catch (e) {
-            done();
-            callback(e);
-            return;
-        }
+	var cmd;
 
-        if (filter.debug)
-            console.log(LOGGER, cmd.query, cmd.params);
+	if (filter.exec === 'list') {
 
-        client.execute(cmd.query, cmd.params, { outFormat: oracledb.OBJECT, autoCommit: true }, function(err, response) {
-            if (err) {
-                done();
-                errorhandling && errorhandling(err, cmd);
-                callback(err);
-                return;
-            }
+		try {
+			cmd = makesql(filter);
+		} catch (e) {
+			done();
+			callback(e);
+			return;
+		}
 
-            cmd = makesql(filter, 'count');
+		if (filter.debug)
+			console.log(LOGGER, cmd.query, cmd.params);
 
-            if (filter.debug)
-                console.log(LOGGER, cmd.query, cmd.params);
+		client.execute(cmd.query, cmd.params || {}, { outFormat: oracledb.OBJECT }, function(err, response) {
+			if (err) {
+				done();
+				errorhandling && errorhandling(err, cmd);
+				callback(err);
+			} else {
+				cmd = makesql(filter, 'count');
 
-            client.execute(cmd.query, cmd.params, { outFormat: oracledb.OBJECT, autoCommit: true }, function(err, counter) {
-                done();
-                err && errorhandling && errorhandling(err, cmd);
-                callback(err, err ? null : { items: response.rows, count: +counter.rows[0].COUNT });
-            });
-        });
-        return;
-    }
+				if (filter.debug)
+					console.log(LOGGER, cmd.query, cmd.params);
 
-    try {
-        cmd = makesql(filter);
-    } catch (e) {
-        done();
-        callback(e);
-        return;
-    }
+				client.execute(cmd.query, cmd.params || {}, { outFormat: oracledb.OBJECT }, function(err, counter) {
+					done();
+					err && errorhandling && errorhandling(err, cmd);
+					callback(err, err ? null : { items: response.rows, count: +counter.rows[0].COUNT });
+				});
+			}
+		});
+		return;
+	}
 
-    if (filter.debug)
-        console.log(LOGGER, cmd.query, cmd.params);
+	try {
+		cmd = makesql(filter);
+	} catch (e) {
+		done();
+		callback(e);
+		return;
+	}
 
-    client.execute(cmd.query, cmd.params, { outFormat: oracledb.OBJECT, autoCommit: true }, function(err, response) {
-        done();
+	if (filter.debug)
+		console.log(LOGGER, cmd.query, cmd.params);
 
-        if (err) {
-            errorhandling && errorhandling(err, cmd);
-            callback(err);
-            return;
-        }
+	client.execute(cmd.query, cmd.params || {}, { outFormat: oracledb.OBJECT, autoCommit: true }, function(err, response) {
+		done();
 
-        var output;
+		if (err) {
+			errorhandling && errorhandling(err, cmd);
+			callback(err);
+			return;
+		}
 
-        switch (filter.exec) {
-            case 'remove':
-                output = response.rowsAffected;
-                callback(null, output);
-                break;
-            case 'check':
-                output = response.rows && response.rows.length > 0;
-                callback(null, output);
-                break;
-            case 'count':
-                output = response.rows && response.rows[0] ? response.rows[0].COUNT : null;
-                callback(null, output);
-                break;
-            case 'scalar':
-                output = filter.scalar.type === 'group' ? response.rows : (response.rows[0] ? response.rows[0].VALUE : null);
-                callback(null, output);
-                break;
-            case 'insert':
-                output = response.rowsAffected;
-                callback(null, output);
-                break;
-            case 'update':
-                output = response.rowsAffected;
-                callback(null, output);
-                break;
-            default:
-                output = response.rows;
-                callback(null, output);
-                break;
-        }
-    });
+		var output;
+
+		switch (filter.exec) {
+			case 'insert':
+				if (filter.returning)
+					output = response.rows?.[0];
+				else if (filter.primarykey)
+					output = response.rows?.[0]?.[filter.primarykey];
+				else
+					output = response.rowsAffected;
+				callback(null, output);
+				break;
+
+			case 'update':
+				if (filter.returning)
+					output = filter.first ? (response.rows?.[0]) : response.rows;
+				else
+					output = (response.rows?.[0]?.COUNT) || 0;
+				callback(null, output);
+				break;
+
+			case 'remove':
+				if (filter.returning)
+					output = filter.first ? (response.rows?.[0]) : response.rows;
+				else
+					output = response.rowsAffected;
+				callback(null, output);
+				break;
+
+			case 'check':
+				output = response.rows[0] ? response.rows.length > 0 : false;
+				callback(null, output);
+				break;
+
+			case 'count':
+				output = response.rows?.[0]?.COUNT || null;
+				callback(null, output);
+				break;
+
+			case 'scalar':
+				output = filter.scalar.type === 'group' ? response.rows : (response.rows?.[0]?.VALUE || null);
+				callback(null, output);
+				break;
+
+			default:
+				output = response.rows;
+				callback(null, output);
+				break;
+		}
+	});
 }
 
 function oracle_where(where, opt, filter, operator, params) {
@@ -118,6 +136,14 @@ function oracle_where(where, opt, filter, operator, params) {
                 FieldsCache[key] = name;
             }
         }
+
+		if (typeof item.value === 'boolean')
+			item.value = item.value ? 1 : 0;
+
+		if (item.value === 't')
+			item.value = 1;
+		if (item.value === 'f')
+			item.value = 0;
 
         switch (item.type) {
             case 'or': {
@@ -196,6 +222,14 @@ function oracle_insertupdate(filter, insert) {
         var val = filter.payload[key];
         if (val === undefined)
             continue;
+
+	if (typeof val === 'boolean')
+		val = val ? 1 : 0;
+
+	if (val === 't')
+		val = 1;
+	if (val === 'f')
+		val = 0;
 
         var c = key[0];
         switch (c) {
@@ -327,7 +361,7 @@ function makesql(opt, exec) {
             params = tmp.params;
             break;
         case 'check':
-            query = 'SELECT 1 AS COUNT FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ') + ' FETCH FIRST 1 ROWS ONLY') : '');
+            query = "SELECT 1 FROM user_tables WHERE table_name = '" + opt.table2 + "'";
             isread = true;
             break;
         case 'drop':
@@ -453,8 +487,6 @@ function oracle_escape(val) {
 
 global.ORACLE_ESCAPE = ORACLE_ESCAPE;
 
-global.ORACLE_ESCAPE = ORACLE_ESCAPE;
-
 function dateToString(dt) {
     var arr = [];
     arr.push(dt.getFullYear().toString());
@@ -467,11 +499,15 @@ function dateToString(dt) {
 }
 
 exports.init = function(name, connstring, pooling, errorhandling) {
+
     if (!name)
         name = 'default';
 
+    if (pooling)
+        pooling = +pooling;
+
     if (POOLS[name]) {
-        POOLS[name].close();
+        POOLS[name].close(); // No 'end()' en Oracle, usamos 'close()'
         delete POOLS[name];
     }
 
@@ -481,14 +517,43 @@ exports.init = function(name, connstring, pooling, errorhandling) {
     }
 
     var onerror = null;
+
     if (errorhandling)
-        onerror = (err, cmd) => errorhandling(err + ' - ' + cmd.query.substring(0, 100));
+        onerror = (err, cmd) => errorhandling(err + ' - ' + (cmd?.query || '').substring(0, 100));
+
+    var index = connstring.indexOf('?');
+    var defschema = '';
+
+    if (index !== -1) {
+        var args = connstring.substring(index + 1).parseEncoded();
+        defschema = args.schema;
+        if (args.pooling)
+            pooling = +args.pooling;
+        connstring = connstring.substring(0, index); // Remove ?params from URI
+    }
+
+    // Parse Oracle URI
+    var uri = new URL(connstring);
+    var user = decodeURIComponent(uri.username);
+    var password = decodeURIComponent(uri.password);
+    var connectString = `${uri.hostname}:${uri.port}${uri.pathname}`;
 
     NEWDB(name, function(filter, callback) {
+
+        if (filter.schema == null && defschema)
+            filter.schema = defschema;
+
         filter.table2 = filter.schema ? (filter.schema + '.' + filter.table) : filter.table;
-        oracledb.getConnection({ connectString: connstring }, function(err, client) {
-            if (err) return callback(err);
-            exec(client, filter, callback, () => client.close(), onerror);
+
+        oracledb.getConnection({
+            user: user,
+            password: password,
+            connectString: connectString
+        }, function(err, client) {
+            if (err)
+                callback(err);
+            else
+                exec(client, filter, callback, () => client.close(), onerror);
         });
     });
 };
