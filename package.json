@@ -1,6 +1,6 @@
 {
   "name": "querybuilderoracle",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "description": "Total.js Oracle integrator",
   "main": "index.js",
   "scripts": {
