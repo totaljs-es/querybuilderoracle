@@ -1,22 +1,17 @@
 // Total.js Module: Oracle integrator
-const oracledb = require('oracledb');
-const CANSTATS = global.F ? (global.F.stats && global.F.stats.performance && global.F.stats.performance.dbrm != null) : false;
-const REG_ORACLE_ESCAPE = /'/g;
-const REG_LANGUAGE = /[a-z0-9]+§/gi;
-const REG_WRITE = /(INSERT|UPDATE|DELETE|DROP)\s/i;
-const REG_COL_TEST = /"|\s|:|\./;
-const REG_UPDATING_CHARS = /^[-+*/><!=#]/;
-const LOGGER = ' -- ORACLE -->';
-
-const POOLS = {};
+var oracledb = require('oracledb');
+var CANSTATS = global.F ? (global.F.stats && global.F.stats.performance && global.F.stats.performance.dbrm != null) : false;
+var REG_LANGUAGE = /[a-z0-9]+§/gi;
+var REG_COL_TEST = /"|\s|:|\./;
+var REG_WRITE = /(INSERT|UPDATE|DELETE|DROP)/i;
+var LOGGER = '-- ORACLE -->';
+var POOLS = {};
 var FieldsCache = {};
 
 function exec(client, filter, callback, done, errorhandling) {
-
 	var cmd;
 
 	if (filter.exec === 'list') {
-
 		try {
 			cmd = makesql(filter);
 		} catch (e) {
@@ -28,7 +23,7 @@ function exec(client, filter, callback, done, errorhandling) {
 		if (filter.debug)
 			console.log(LOGGER, cmd.query, cmd.params);
 
-		client.execute(cmd.query, cmd.params || {}, { outFormat: oracledb.OBJECT }, function(err, response) {
+		client.execute(cmd.query, cmd.params || [], { outFormat: oracledb.OUT_FORMAT_OBJECT, autoCommit: true }, function(err, response) {
 			if (err) {
 				done();
 				errorhandling && errorhandling(err, cmd);
@@ -39,7 +34,7 @@ function exec(client, filter, callback, done, errorhandling) {
 				if (filter.debug)
 					console.log(LOGGER, cmd.query, cmd.params);
 
-				client.execute(cmd.query, cmd.params || {}, { outFormat: oracledb.OBJECT }, function(err, counter) {
+				client.execute(cmd.query, cmd.params || [], { outFormat: oracledb.OUT_FORMAT_OBJECT }, function(err, counter) {
 					done();
 					err && errorhandling && errorhandling(err, cmd);
 					callback(err, err ? null : { items: response.rows, count: +counter.rows[0].COUNT });
@@ -51,6 +46,7 @@ function exec(client, filter, callback, done, errorhandling) {
 
 	try {
 		cmd = makesql(filter);
+		console.log(cmd);
 	} catch (e) {
 		done();
 		callback(e);
@@ -60,7 +56,7 @@ function exec(client, filter, callback, done, errorhandling) {
 	if (filter.debug)
 		console.log(LOGGER, cmd.query, cmd.params);
 
-	client.execute(cmd.query, cmd.params || {}, { outFormat: oracledb.OBJECT, autoCommit: true }, function(err, response) {
+	client.execute(cmd.query, cmd.params || [], { outFormat: oracledb.OUT_FORMAT_OBJECT, autoCommit: true }, function(err, response) {
 		done();
 
 		if (err) {
@@ -70,492 +66,510 @@ function exec(client, filter, callback, done, errorhandling) {
 		}
 
 		var output;
+		var rows = response.rows || [];
 
 		switch (filter.exec) {
 			case 'insert':
 				if (filter.returning)
-					output = response.rows?.[0];
+					output = rows.length && rows[0];
 				else if (filter.primarykey)
-					output = response.rows?.[0]?.[filter.primarykey];
+					output = rows.length && rows[0][filter.primarykey.toUpperCase()];
 				else
 					output = response.rowsAffected;
 				callback(null, output);
 				break;
-
 			case 'update':
 				if (filter.returning)
-					output = filter.first ? (response.rows?.[0]) : response.rows;
+					output = filter.first ? (rows.length && rows[0]) : rows;
 				else
-					output = (response.rows?.[0]?.COUNT) || 0;
+					output = rows.length && rows[0] && rows[0].COUNT || 0;
 				callback(null, output);
 				break;
-
 			case 'remove':
 				if (filter.returning)
-					output = filter.first ? (response.rows?.[0]) : response.rows;
+					output = filter.first ? (rows.length && rows[0]) : rows;
 				else
 					output = response.rowsAffected;
 				callback(null, output);
 				break;
-
 			case 'check':
-				output = response.rows[0] ? response.rows.length > 0 : false;
+				output = rows.length > 0 && rows[0].COUNT > 0;
 				callback(null, output);
 				break;
-
 			case 'count':
-				output = response.rows?.[0]?.COUNT || null;
+				output = rows.length ? rows[0].COUNT : null;
 				callback(null, output);
 				break;
-
 			case 'scalar':
-				output = filter.scalar.type === 'group' ? response.rows : (response.rows?.[0]?.VALUE || null);
+				output = filter.scalar.type === 'group' ? rows : (rows[0] ? rows[0].VALUE : null);
 				callback(null, output);
 				break;
-
 			default:
-				output = response.rows;
-				callback(null, output);
+				callback(null, rows);
 				break;
 		}
 	});
 }
 
-function oracle_where(where, opt, filter, operator, params) {
-    for (let item of filter) {
-        let name = '';
-        if (item.name) {
-            let key = 'where_' + (opt.language || '') + '_' + item.name;
-            name = FieldsCache[key];
-            if (!name) {
-                name = item.name;
-                if (name[name.length - 1] === '§')
-                    name = replacelanguage(item.name, opt.language, true);
-                else
-                    name = REG_COL_TEST.test(item.name) ? item.name : ('"' + item.name + '"');
-                FieldsCache[key] = name;
-            }
-        }
+var valueparse = function(value) {
+	let type = typeof value;
+	
+	if (type === 'string')
+		value = value.replace(/=FALSE/gi, '=0').replace(/=TRUE/gi, '=1');
+
+	if (type === 'boolean')
+		value = value ? 1 : 0;
+	
+	return value;
+};
+
+function oracle_where(where, opt, filter, operator) {
+	var tmp;
+	for (var item of filter) {
+		var name = '';
+		if (item.name) {
+			var key = 'where_' + (opt.language || '') + '_' + item.name;
+			name = FieldsCache[key];
+			if (!name) {
+				name = item.name;
+				if (name[name.length - 1] === '§')
+					name = replacelanguage(item.name, opt.language, true);
+				else
+					name = REG_COL_TEST.test(name) ? name : '"' + name + '"';
+				FieldsCache[key] = name;
+			}
+		}
 
 		if (typeof item.value === 'boolean')
 			item.value = item.value ? 1 : 0;
-
-		if (item.value === 't')
-			item.value = 1;
-		if (item.value === 'f')
-			item.value = 0;
-
-        switch (item.type) {
-            case 'or': {
-                let tmp = [];
-                oracle_where(tmp, opt, item.value, 'OR', params);
-                if (tmp.length) {
-                    if (where.length) where.push(operator);
-                    where.push('(' + tmp.join(' ') + ')');
-                }
-                break;
-            }
-            case 'in':
-            case 'notin': {
-                if (where.length) where.push(operator);
-                let arr = Array.isArray(item.value) ? item.value : [item.value];
-                let binds = arr.map(v => {
-                    params.push(v);
-                    return ':' + params.length;
-                });
-                where.push(name + (item.type === 'in' ? ' IN ' : ' NOT IN ') + '(' + binds.join(',') + ')');
-                break;
-            }
-            case 'between': {
-                if (where.length) where.push(operator);
-                params.push(item.a);
-                params.push(item.b);
-                where.push(name + ' BETWEEN :' + (params.length - 1) + ' AND :' + params.length);
-                break;
-            }
-            case 'search': {
-                if (where.length) where.push(operator);
-                params.push('%' + item.value + '%');
-                where.push('LOWER(' + name + ') LIKE LOWER(:' + params.length + ')');
-                break;
-            }
-            case 'empty': {
-                if (where.length) where.push(operator);
-                where.push('(' + name + ' IS NULL OR LENGTH(' + name + ')=0)');
-                break;
-            }
-            case 'where': {
-                if (where.length) where.push(operator);
-                if (item.value == null)
-                    where.push(name + (item.comparer === '=' ? ' IS NULL' : ' IS NOT NULL'));
-                else {
-                    params.push(item.value);
-                    where.push(name + (item.comparer || '=') + ' :' + params.length);
-                }
-                break;
-            }
-            case 'query': {
-                if (where.length) where.push(operator);
-                where.push('(' + item.value + ')');
-                break;
-            }
-            case 'month':
-            case 'year':
-            case 'day':
-            case 'hour':
-            case 'minute': {
-                if (where.length) where.push(operator);
-                params.push(item.value);
-                where.push('EXTRACT(' + item.type.toUpperCase() + ' FROM ' + name + ') = :' + params.length);
-                break;
-            }
-        }
-    }
+		
+		switch (item.type) {
+			case 'or':
+				tmp = [];
+				oracle_where(tmp, opt, item.value, 'OR');
+				where.length && where.push(operator);
+				where.push('(' + tmp.join(' ') + ')');
+				break;
+			case 'in':
+			case 'notin':
+				where.length && where.push(operator);
+				tmp = [];
+				if (item.value instanceof Array) {
+					for (var val of item.value) {
+						if (val != null)
+							tmp.push(oracle_escape(val));
+					}
+				} else if (item.value != null)
+					tmp = [oracle_escape(item.value)];
+				if (!tmp.length)
+					tmp.push('NULL');
+				where.push(name + (item.type === 'in' ? ' IN ' : ' NOT IN ') + '(' + tmp.join(',') + ')');
+				break;
+			case 'query':
+				where.length && where.push(operator);
+				where.push('(' + item.value + ')');
+				break;
+			case 'where':
+				where.length && where.push(operator);
+				if (item.value == null)
+					where.push(name + (item.comparer === '=' ? ' IS NULL' : ' IS NOT NULL'));
+				else
+					where.push(name + item.comparer + oracle_escape(item.value));
+				break;
+			case 'contains':
+				where.length && where.push(operator);
+				where.push('LENGTH(' + name + ')>0');
+				break;
+			case 'search':
+				where.length && where.push(operator);
+				tmp = item.value ? item.value.replace(/%/g, '') : '';
+				if (item.operator === 'beg')
+					where.push('UPPER(' + name + ') LIKE ' + oracle_escape(tmp.toUpperCase() + '%'));
+				else if (item.operator === 'end')
+					where.push('UPPER(' + name + ') LIKE ' + oracle_escape('%' + tmp.toUpperCase()));
+				else
+					where.push('UPPER(' + name + ') LIKE ' + oracle_escape('%' + tmp.toUpperCase() + '%'));
+				break;
+			case 'month':
+			case 'year':
+			case 'day':
+			case 'hour':
+			case 'minute':
+				where.length && where.push(operator);
+				where.push('EXTRACT(' + item.type.toUpperCase() + ' FROM ' + name + ')' + item.comparer + oracle_escape(item.value));
+				break;
+			case 'empty':
+				where.length && where.push(operator);
+				where.push('(' + name + ' IS NULL OR LENGTH(' + name + ')=0)');
+				break;
+			case 'between':
+				where.length && where.push(operator);
+				where.push('(' + name + ' BETWEEN ' + oracle_escape(item.a) + ' AND ' + oracle_escape(item.b) + ')');
+				break;
+			case 'permit':
+				where.length && where.push(operator);
+				tmp = [];
+				for (var m of item.value)
+					tmp.push(oracle_escape(m));
+				if (!tmp.length)
+					tmp = ['NULL'];
+				if (item.required)
+					where.push('(' + (item.userid ? ('userid=' + oracle_escape(item.userid) + ' OR ') : '') + name + ' IS NULL OR ' + name + ' IN (' + tmp.join(',') + '))');
+				else
+					where.push('(' + (item.userid ? ('userid=' + oracle_escape(item.userid) + ' OR ') : '') + name + ' IN (' + tmp.join(',') + '))');
+				break;
+		}
+	}
 }
 
 function oracle_insertupdate(filter, insert) {
-    var query = [];
-    var fields = insert ? [] : null;
-    var params = [];
+	var query = [];
+	var fields = insert ? [] : null;
+	var params = [];
 
-    for (var key in filter.payload) {
-        var val = filter.payload[key];
-        if (val === undefined)
-            continue;
+	for (var key in filter.payload) {
+		var val = filter.payload[key];
+		if (val === undefined)
+			continue;
 
-	if (typeof val === 'boolean')
-		val = val ? 1 : 0;
+		var c = key[0];
+		switch (c) {
+			case '-':
+			case '+':
+			case '*':
+			case '/':
+				key = key.substring(1);
+				params.push(val ? val : 0);
+				if (insert) {
+					fields.push('"' + key + '"');
+					query.push(':' + params.length);
+				} else
+					query.push('"' + key + '" = NVL("' + key + '",0) ' + c + ' :' + params.length);
+				break;
+			case '>':
+			case '<':
+				key = key.substring(1);
+				params.push(val ? val : 0);
+				if (insert) {
+					fields.push('"' + key + '"');
+					query.push(':' + params.length);
+				} else
+					query.push('"' + key + '" = ' + (c === '>' ? 'GREATEST' : 'LEAST') + '("' + key + '", :' + params.length + ')');
+				break;
+			case '!':
+				key = key.substring(1);
+				if (insert) {
+					fields.push('"' + key + '"');
+					query.push('0');
+				} else
+					query.push('"' + key + '" = CASE "' + key + '" WHEN 1 THEN 0 ELSE 1 END');
+				break;
+			case '=':
+			case '#':
+				key = key.substring(1);
+				if (insert) {
+					if (c === '=') {
+						fields.push('"' + key + '"');
+						query.push(val);
+					}
+				} else
+					query.push('"' + key + '" = ' + val);
+				break;
+			default:
+				params.push(val);
+				if (insert) {
+					fields.push('"' + key + '"');
+					query.push(':' + params.length);
+				} else
+					query.push('"' + key + '" = :' + params.length);
+				break;
+		}
+	}
 
-	if (val === 't')
-		val = 1;
-	if (val === 'f')
-		val = 0;
-
-        var c = key[0];
-        switch (c) {
-            case '-':
-            case '+':
-            case '*':
-            case '/':
-                key = key.substring(1);
-                params.push(val ? val : 0);
-                if (insert) {
-                    fields.push('"' + key + '"');
-                    query.push(':' + params.length);
-                } else {
-                    query.push('"' + key + '" = "' + key + '" ' + c + ' :' + params.length);
-                }
-                break;
-            case '>':
-            case '<':
-                key = key.substring(1);
-                params.push(val ? val : 0);
-                if (insert) {
-                    fields.push('"' + key + '"');
-                    query.push(':' + params.length);
-                } else {
-                    query.push('"' + key + '" = ' + (c === '>' ? 'GREATEST' : 'LEAST') + '("' + key + '", :' + params.length + ')');
-                }
-                break;
-            case '!':
-                key = key.substring(1);
-                if (insert) {
-                    fields.push('"' + key + '"');
-                    query.push('0');
-                } else {
-                    query.push('"' + key + '" = CASE WHEN "' + key + '" = 1 THEN 0 ELSE 1 END');
-                }
-                break;
-            case '=':
-            case '#':
-                key = key.substring(1);
-                if (insert) {
-                    if (c === '=') {
-                        fields.push('"' + key + '"');
-                        query.push(val);
-                    }
-                } else {
-                    query.push('"' + key + '" = ' + val);
-                }
-                break;
-            default:
-                params.push(val);
-                if (insert) {
-                    fields.push('"' + key + '"');
-                    query.push(':' + params.length);
-                } else {
-                    query.push('"' + key + '" = :' + params.length);
-                }
-                break;
-        }
-    }
-
-    return { fields, query, params };
+	return { fields: fields, query: query, params: params };
 }
 
 function replacelanguage(fields, language, noas) {
-    return fields.replace(REG_LANGUAGE, function(val) {
-        val = val.substring(0, val.length - 1);
-        return '"' + val + (noas ? (language || '') + '"' : language ? (language + '" AS "' + val + '"') : '"');
-    });
+	return fields.replace(REG_LANGUAGE, function(val) {
+		val = val.substring(0, val.length - 1);
+		return '"' + val + '' + (noas ? ((language || '') + '"') : language ? (language + '" AS \"' + val + '\"') : '"');
+	});
+}
+
+function quotefields(fields) {
+	if (!fields || fields === '*')
+		return fields;
+console.log(fields);
+	return fields.split(',').map(x => {
+		x = x.trim();
+		if (!x.length)
+			return '';
+		if (x[0] === '"')
+			return x;
+		return '"' + x + '"';
+	}).join(',');
 }
 
 function makesql(opt, exec) {
-    var query = '';
-    var where = [];
-    var model = {};
-    var isread = false;
-    var params;
-    var returning;
-    var tmp;
+	var query = '';
+	var where = [];
+	var model = {};
+	var isread = false;
+	var params;
+	var returning;
+	var tmp;
 
-    if (!exec)
-        exec = opt.exec;
+	if (opt.schema)
+		opt.table2 = '"' + opt.schema.replace(/"/g, '') + '"."' + opt.table.replace(/"/g, '') + '"';
+	else
+		opt.table2 = '"' + opt.table.replace(/"/g, '') + '"';
 
-    params = [];
-    oracle_where(where, opt, opt.filter || [], 'AND', params);
+	if (!exec)
+		exec = opt.exec;
 
-    var language = opt.language || '';
-    var fields;
-    var sort;
+	oracle_where(where, opt, opt.filter, 'AND');
 
-    if (opt.fields) {
-        let key = 'fields_' + language + '_' + opt.fields.join(',');
-        fields = FieldsCache[key] || '';
-        if (!fields) {
-            for (let i = 0; i < opt.fields.length; i++) {
-                let m = opt.fields[i];
-                if (m[m.length - 1] === '§')
-                    fields += (fields ? ',' : '') + replacelanguage(m, opt.language);
-                else
-                    fields += (fields ? ',' : '') + (REG_COL_TEST.test(m) ? m : ('"' + m + '"'));
-            }
-            FieldsCache[key] = fields;
-        }
-    }
+	var language = opt.language || '';
+	var fields;
+	var sort;
 
-    switch (exec) {
-        case 'find':
-        case 'read':
-        case 'list':
-            query = 'SELECT ' + (fields || '*') + ' FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
-            isread = true;
-            break;
-        case 'count':
-            opt.first = true;
-            query = 'SELECT COUNT(1) AS COUNT FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
-            isread = true;
-            break;
-        case 'insert':
-            returning = opt.returning ? opt.returning.join(', ') : (opt.primarykey || '');
-            tmp = oracle_insertupdate(opt, true);
-            query = 'INSERT INTO ' + opt.table2 + ' (' + tmp.fields.join(',') + ') VALUES(' + tmp.query.join(',') + ')';
-            params = tmp.params;
-            break;
-        case 'remove':
-            query = 'DELETE FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
-            break;
-        case 'update':
-            tmp = oracle_insertupdate(opt);
-            query = 'UPDATE ' + opt.table2 + ' SET ' + tmp.query.join(',') + (where.length ? (' WHERE ' + where.join(' ')) : '');
-            params = tmp.params;
-            break;
-        case 'check':
-            query = "SELECT 1 FROM user_tables WHERE table_name = '" + opt.table2 + "'";
-            isread = true;
-            break;
-        case 'drop':
-            query = 'DROP TABLE ' + opt.table2;
-            break;
-        case 'truncate':
-            query = 'TRUNCATE TABLE ' + opt.table2;
-            break;
-        case 'scalar':
-            switch (opt.scalar.type) {
-                case 'avg':
-                case 'min':
-                case 'sum':
-                case 'max':
-                case 'count': {
-                    opt.first = true;
-                    var val = opt.scalar.key === '*' ? '1' : opt.scalar.key;
-                    query = 'SELECT ' + opt.scalar.type.toUpperCase() + '(' + val + ') AS VALUE FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
-                    break;
-                }
-                case 'group': {
-                    query = 'SELECT ' + opt.scalar.key + ', ' + (opt.scalar.key2 ? 'SUM(' + opt.scalar.key2 + ')' : 'COUNT(1)') + ' AS VALUE FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '') + ' GROUP BY ' + opt.scalar.key;
-                    break;
-                }
-            }
-            isread = true;
-            break;
-        case 'query':
-            if (where.length) {
-                let wherem = opt.query.match(/\{where\}/ig);
-                let wherec = 'WHERE ' + where.join(' ');
-                query = wherem ? opt.query.replace(wherem, wherec) : (opt.query + ' ' + wherec);
-            } else {
-                query = opt.query;
-            }
-            params = opt.params;
-            isread = REG_WRITE.test(query) ? false : true;
-            break;
-    }
+	if (opt.fields) {
+		var key = 'fields_' + language + '_' + opt.fields.join(',');
+		fields = FieldsCache[key] || '';
+		if (!fields) {
+			for (var i = 0; i < opt.fields.length; i++) {
+				var m = opt.fields[i];
+				if (m[m.length - 1] === '§')
+					fields += (fields ? ',' : '') + replacelanguage(m, language);
+				else
+					fields += (fields ? ',' : '') + (REG_COL_TEST.test(m) ? m : ('"' + m + '"'));
+			}
+			FieldsCache[key] = fields;
+		}
+	}
 
-    if (exec === 'find' || exec === 'read' || exec === 'list' || exec === 'query' || exec === 'check') {
-        if (opt.sort) {
-            let key = 'sort_' + language + '_' + opt.sort.join(',');
-            sort = FieldsCache[key] || '';
-            if (!sort) {
-                for (let i = 0; i < opt.sort.length; i++) {
-                    let m = opt.sort[i];
-                    let index = m.lastIndexOf('_');
-                    let name = m.substring(0, index);
-                    let value = (REG_COL_TEST.test(name) ? name : ('"' + name + '"')).replace(/§/, language);
-                    sort += (sort ? ',' : '') + value + ' ' + (m.substring(index + 1).toLowerCase() === 'desc' ? 'DESC' : 'ASC');
-                }
-                FieldsCache[key] = sort;
-            }
-            query += ' ORDER BY ' + sort;
-        }
+	switch (exec) {
+		case 'find':
+		case 'read':
+		case 'list':
+			query = 'SELECT ' + (fields || '*') + ' FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
+			isread = true;
+			break;
+		case 'count':
+			opt.first = true;
+			query = 'SELECT COUNT(1) AS COUNT FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
+			isread = true;
+			break;
+		case 'insert':
+			returning = opt.returning ? opt.returning.join(',') : opt.primarykey || '';
+			tmp = oracle_insertupdate(opt, true);
+			query = 'INSERT INTO ' + opt.table2 + ' (' + tmp.fields.join(',') + ') VALUES (' + tmp.query.join(',') + ')';
+			if (returning)
+				query += ' RETURNING ' + returning + ' INTO ' + returning.split(',').map(f => ':' + (tmp.params.length + 1)).join(',');
+			params = tmp.params;
+			break;
+		case 'remove':
+			returning = opt.returning ? opt.returning.join(',') : opt.primarykey || '';
+			query = 'DELETE FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
+			if (returning)
+				query += ' RETURNING ' + returning + ' INTO ' + returning.split(',').map(f => ':' + (params ? params.length + 1 : 1)).join(',');
+			break;
+		case 'update':
+			returning = opt.returning ? opt.returning.join(',') : '';
+			tmp = oracle_insertupdate(opt);
+			query = 'UPDATE ' + opt.table2 + ' SET ' + tmp.query.join(',') + (where.length ? (' WHERE ' + where.join(' ')) : '');
+			if (returning)
+				query += ' RETURNING ' + returning + ' INTO ' + returning.split(',').map(f => ':' + (tmp.params.length + 1)).join(',');
+			params = tmp.params;
+			break;
+		case 'check':
+			query = 'SELECT COUNT(1) AS COUNT FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
+			isread = true;
+			break;
+		case 'drop':
+			query = 'DROP TABLE ' + opt.table2;
+			break;
+		case 'truncate':
+			query = 'TRUNCATE TABLE ' + opt.table2;
+			break;
+		case 'command':
+			break;
+		case 'scalar':
+			opt.first = true;
+			var val = opt.scalar.key === '*' ? '1' : opt.scalar.key;
+			if (opt.scalar.type === 'group') {
+				query = 'SELECT ' + val + ', ' + (opt.scalar.key2 ? ('SUM(' + opt.scalar.key2 + ')') : 'COUNT(1)') + ' AS VALUE FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '') + ' GROUP BY ' + val;
+			} else {
+				query = 'SELECT ' + opt.scalar.type.toUpperCase() + '(' + val + ') AS VALUE FROM ' + opt.table2 + (where.length ? (' WHERE ' + where.join(' ')) : '');
+			}
+			isread = true;
+			break;
+		case 'query':
+			if (where.length) {
+				var wherem = opt.query.match(/\{where\}/ig);
+				var wherec = 'WHERE ' + where.join(' ');
+				query = wherem ? opt.query.replace(wherem, wherec) : (opt.query + ' ' + wherec);
+			} else
+				query = opt.query;
+			params = opt.params;
+			isread = REG_WRITE.test(query) ? false : true;
+			break;
+	}
 
-        if (opt.take && opt.skip)
-            query += ' OFFSET ' + opt.skip + ' ROWS FETCH NEXT ' + opt.take + ' ROWS ONLY';
-        else if (opt.take)
-            query += ' FETCH FIRST ' + opt.take + ' ROWS ONLY';
-        else if (opt.skip)
-            query += ' OFFSET ' + opt.skip + ' ROWS';
-    }
+	if (exec === 'find' || exec === 'read' || exec === 'list' || exec === 'query' || exec === 'check') {
+		if (opt.sort) {
+			var key = 'sort_' + language + '_' + opt.sort.join(',');
+			sort = FieldsCache[key] || '';
+			if (!sort) {
+				for (var i = 0; i < opt.sort.length; i++) {
+					var m = opt.sort[i];
+					var index = m.lastIndexOf('_');
+					var name = m.substring(0, index);
+					var value = (REG_COL_TEST.test(name) ? name : ('"' + name + '"')).replace(/§/, language);
+					sort += (sort ? ',' : '') + value + ' ' + (m.substring(index + 1).toLowerCase() === 'desc' ? 'DESC' : 'ASC');
+				}
+				FieldsCache[key] = sort;
+			}
+			query += ' ORDER BY ' + sort;
+		}
 
-    model.query = query;
-    model.params = params;
+		if (opt.take || opt.skip) {
+			var offset = opt.skip || 0;
+			var limit = opt.take || 1000;
+			query += ' OFFSET ' + offset + ' ROWS FETCH NEXT ' + limit + ' ROWS ONLY';
+		}
+	}
 
-    if (CANSTATS) {
-        if (isread)
-            F.stats.performance.dbrm++;
-        else
-            F.stats.performance.dbwm++;
-    }
+	model.query = query;
+	model.params = params;
 
-    return model;
+	if (CANSTATS) {
+		if (isread)
+			F.stats.performance.dbrm++;
+		else
+			F.stats.performance.dbwm++;
+	}
+
+	return model;
 }
 
 function ORACLE_ESCAPE(value) {
-    if (value == null)
-        return 'null';
+	if (value == null)
+		return 'NULL';
 
-    if (value instanceof Array) {
-        let builder = [];
-        for (let m of value)
-            builder.push(ORACLE_ESCAPE(m));
-        return builder.join(',');
-    }
+	if (value instanceof Array) {
+		var builder = [];
+		for (var m of value)
+			builder.push(ORACLE_ESCAPE(m));
+		return builder.join(',');
+	}
 
-    let type = typeof(value);
+	var type = typeof value;
 
-    if (type === 'function') {
-        value = value();
-        if (value == null)
-            return 'null';
-        type = typeof(value);
-    }
+	if (type === 'function') {
+		value = value();
+		if (value == null)
+			return 'NULL';
+		type = typeof value;
+	}
 
-    if (type === 'boolean')
-        return value ? '1' : '0';
+	if (type === 'boolean')
+		return value ? '1' : '0';
 
-    if (type === 'number')
-        return value + '';
+	if (type === 'number')
+		return value.toString();
 
-    if (type === 'string')
-        return oracle_escape(value);
+	if (type === 'string')
+		return oracle_escape(value);
 
-    if (value instanceof Date)
-        return oracle_escape(dateToString(value));
+	if (value instanceof Date)
+		return "TO_DATE('" + dateToString(value) + "', 'YYYY-MM-DD HH24:MI:SS')";
 
-    if (type === 'object')
-        return oracle_escape(JSON.stringify(value));
+	if (type === 'object')
+		return oracle_escape(JSON.stringify(value));
 
-    return oracle_escape(value.toString());
+	return oracle_escape(value.toString());
 }
 
+// Oracle-safe escape function
 function oracle_escape(val) {
-    if (val == null)
-        return 'NULL';
-    val = val.replace(REG_ORACLE_ESCAPE, "''");
-    return "'" + val + "'";
+	if (val == null)
+		return 'NULL';
+	
+	return "'" + val.replace(/'/g, "''") + "'";
+}
+
+function dateToString(dt) {
+	var arr = [];
+	arr.push(dt.getFullYear().toString());
+	arr.push((dt.getMonth() + 1).toString());
+	arr.push(dt.getDate().toString());
+	arr.push(dt.getHours().toString());
+	arr.push(dt.getMinutes().toString());
+	arr.push(dt.getSeconds().toString());
+
+	for (var i = 1; i < arr.length; i++) {
+		if (arr[i].length === 1)
+			arr[i] = '0' + arr[i];
+	}
+
+	return arr[0] + '-' + arr[1] + '-' + arr[2] + ' ' + arr[3] + ':' + arr[4] + ':' + arr[5];
 }
 
 global.ORACLE_ESCAPE = ORACLE_ESCAPE;
 
-function dateToString(dt) {
-    var arr = [];
-    arr.push(dt.getFullYear().toString());
-    arr.push((dt.getMonth() + 1).toString().padStart(2, '0'));
-    arr.push(dt.getDate().toString().padStart(2, '0'));
-    arr.push(dt.getHours().toString().padStart(2, '0'));
-    arr.push(dt.getMinutes().toString().padStart(2, '0'));
-    arr.push(dt.getSeconds().toString().padStart(2, '0'));
-    return arr[0] + '-' + arr[1] + '-' + arr[2] + ' ' + arr[3] + ':' + arr[4] + ':' + arr[5];
-}
-
 exports.init = function(name, connstring, pooling, errorhandling) {
+	if (!name)
+		name = 'default';
 
-    if (!name)
-        name = 'default';
+	if (POOLS[name]) {
+		POOLS[name].close();
+		delete POOLS[name];
+	}
 
-    if (pooling)
-        pooling = +pooling;
+	if (!connstring) {
+		NEWDB(name, null);
+		return;
+	}
 
-    if (POOLS[name]) {
-        POOLS[name].close(); // No 'end()' en Oracle, usamos 'close()'
-        delete POOLS[name];
-    }
+	var onerror = null;
+	if (errorhandling)
+		onerror = function(err, cmd) {
+			errorhandling(err + ' - ' + (cmd.query || '').substring(0, 100));
+		};
 
-    if (!connstring) {
-        NEWDB(name, null);
-        return;
-    }
+	var index = connstring.indexOf('?');
+	var defschema = '';
+	if (index !== -1) {
+		var args = connstring.substring(index + 1).parseEncoded();
+		defschema = args.schema;
+		if (args.pooling)
+			pooling = +args.pooling;
+	}
 
-    var onerror = null;
+	NEWDB(name, function(filter, callback) {
+		if (filter.schema == null && defschema)
+			filter.schema = defschema;
+		filter.table2 = filter.schema ? (filter.schema + '.' + filter.table) : filter.table;
 
-    if (errorhandling)
-        onerror = (err, cmd) => errorhandling(err + ' - ' + (cmd?.query || '').substring(0, 100));
+		var conn = require('url').parse(connstring);
+		var auth = conn.auth ? conn.auth.split(':') : [];
 
-    var index = connstring.indexOf('?');
-    var defschema = '';
+		var config = {
+		  user: auth[0],
+		  password: auth[1],
+		  connectString: conn.host + (conn.pathname || '')
+		};
 
-    if (index !== -1) {
-        var args = connstring.substring(index + 1).parseEncoded();
-        defschema = args.schema;
-        if (args.pooling)
-            pooling = +args.pooling;
-        connstring = connstring.substring(0, index); // Remove ?params from URI
-    }
-
-    // Parse Oracle URI
-    var uri = new URL(connstring);
-    var user = decodeURIComponent(uri.username);
-    var password = decodeURIComponent(uri.password);
-    var connectString = `${uri.hostname}:${uri.port}${uri.pathname}`;
-
-    NEWDB(name, function(filter, callback) {
-
-        if (filter.schema == null && defschema)
-            filter.schema = defschema;
-
-        filter.table2 = filter.schema ? (filter.schema + '.' + filter.table) : filter.table;
-
-        oracledb.getConnection({
-            user: user,
-            password: password,
-            connectString: connectString
-        }, function(err, client) {
-            if (err)
-                callback(err);
-            else
-                exec(client, filter, callback, () => client.close(), onerror);
-        });
-    });
+		oracledb.getConnection(config, function(err, connection) {
+			if (err)
+				callback(err);
+			else
+				exec(connection, filter, callback, function() {
+					connection.close();
+				}, onerror);
+		});
+	});
 };
 
 ON('service', function(counter) {
