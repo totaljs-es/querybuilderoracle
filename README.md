@@ -32,5 +32,5 @@ DATA.find('tbl_user').where('id', 1234).where('isactive', true).callback(console
 
 ---
 
-- `schema=String` This allows you to isolate tables across different logical applications or tenants inside the same Oracle database. If omitted, queries will run using the Oracle connection user default tenant.
+- `schema=String` sets a default Oracle DB 'schema'.
 - `pooling=Number` sets a default pooling (it overwrites pooling)
