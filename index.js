@@ -1,6 +1,6 @@
 // Total.js Module: Oracle integrator
-var oracledb = require('oracledb');
 var CANSTATS = global.F ? (global.F.stats && global.F.stats.performance && global.F.stats.performance.dbrm != null) : false;
+var oracledb = require('oracledb');
 var REG_LANGUAGE = /[a-z0-9]+§/gi;
 var REG_COL_TEST = /"|\s|:|\./;
 var REG_WRITE = /(INSERT|UPDATE|DELETE|DROP)/i;
@@ -46,7 +46,6 @@ function exec(client, filter, callback, done, errorhandling) {
 
 	try {
 		cmd = makesql(filter);
-		console.log(cmd);
 	} catch (e) {
 		done();
 		callback(e);
@@ -111,18 +110,6 @@ function exec(client, filter, callback, done, errorhandling) {
 	});
 }
 
-var valueparse = function(value) {
-	let type = typeof value;
-	
-	if (type === 'string')
-		value = value.replace(/=FALSE/gi, '=0').replace(/=TRUE/gi, '=1');
-
-	if (type === 'boolean')
-		value = value ? 1 : 0;
-	
-	return value;
-};
-
 function oracle_where(where, opt, filter, operator) {
 	var tmp;
 	for (var item of filter) {
@@ -142,7 +129,7 @@ function oracle_where(where, opt, filter, operator) {
 
 		if (typeof item.value === 'boolean')
 			item.value = item.value ? 1 : 0;
-		
+
 		switch (item.type) {
 			case 'or':
 				tmp = [];
@@ -173,8 +160,12 @@ function oracle_where(where, opt, filter, operator) {
 				where.length && where.push(operator);
 				if (item.value == null)
 					where.push(name + (item.comparer === '=' ? ' IS NULL' : ' IS NOT NULL'));
-				else
+				else {
+					if (typeof item.value === 'boolean')
+						item.value = item.value ? 1 : 0;
+
 					where.push(name + item.comparer + oracle_escape(item.value));
+				}
 				break;
 			case 'contains':
 				where.length && where.push(operator);
@@ -231,6 +222,9 @@ function oracle_insertupdate(filter, insert) {
 		var val = filter.payload[key];
 		if (val === undefined)
 			continue;
+
+		if (typeof val === 'boolean')
+			val = val ? 1 : 0;
 
 		var c = key[0];
 		switch (c) {
@@ -294,20 +288,6 @@ function replacelanguage(fields, language, noas) {
 		val = val.substring(0, val.length - 1);
 		return '"' + val + '' + (noas ? ((language || '') + '"') : language ? (language + '" AS \"' + val + '\"') : '"');
 	});
-}
-
-function quotefields(fields) {
-	if (!fields || fields === '*')
-		return fields;
-console.log(fields);
-	return fields.split(',').map(x => {
-		x = x.trim();
-		if (!x.length)
-			return '';
-		if (x[0] === '"')
-			return x;
-		return '"' + x + '"';
-	}).join(',');
 }
 
 function makesql(opt, exec) {
@@ -474,7 +454,7 @@ function ORACLE_ESCAPE(value) {
 	}
 
 	if (type === 'boolean')
-		return value ? '1' : '0';
+		return value ? 1 : 0;
 
 	if (type === 'number')
 		return value.toString();
@@ -495,8 +475,11 @@ function ORACLE_ESCAPE(value) {
 function oracle_escape(val) {
 	if (val == null)
 		return 'NULL';
-	
-	return "'" + val.replace(/'/g, "''") + "'";
+
+	if (typeof val === 'string')
+		return "'" + val.replace(/'/g, "''") + "'";
+	else
+		return val;
 }
 
 function dateToString(dt) {
