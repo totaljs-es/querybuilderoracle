@@ -1,4 +1,4 @@
-# Total.js QueryBuilder: Oracle <img src="https://github.com/user-attachments/assets/45918196-9ddd-4c4a-bacf-e5ade11ad1b0" alt="Oracle width="54" />
+# Total.js QueryBuilder: Oracle 
 A simple QueryBuilder integrator for Oracle database.
 
 - [Documentation](https://docs.totaljs.com/total4/pzbr001pr41d/)
